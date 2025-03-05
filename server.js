@@ -211,6 +211,177 @@ app.get('/cors-test', (req, res) => {
   });
 });
 
+// Add these new endpoints for subscription handling
+
+// Create a subscription
+app.post('/api/create-subscription', async (req, res) => {
+  try {
+    const { plan_id, user_id, total_count = 12 } = req.body; // total_count is number of billing cycles
+
+    const subscription = await razorpay.subscriptions.create({
+      plan_id: plan_id,
+      total_count: total_count,
+      quantity: 1,
+      customer_notify: 1,
+      notes: {
+        user_id: user_id
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      data: subscription 
+    });
+  } catch (error) {
+    console.error('Error creating subscription:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to create subscription',
+      details: error.message 
+    });
+  }
+});
+
+// Verify subscription payment
+app.post('/api/verify-subscription', async (req, res) => {
+  try {
+    const { 
+      razorpay_payment_id,
+      razorpay_subscription_id,
+      razorpay_signature 
+    } = req.body;
+
+    // Verify the signature
+    const generatedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_payment_id}|${razorpay_subscription_id}`)
+      .digest('hex');
+
+    if (generatedSignature !== razorpay_signature) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid signature' 
+      });
+    }
+
+    // Get subscription details
+    const subscription = await razorpay.subscriptions.fetch(razorpay_subscription_id);
+    
+    // Update user in Firebase
+    const userId = subscription.notes.user_id;
+    const db = admin.firestore();
+    
+    await db.collection('users').doc(userId).update({
+      'subscription.id': razorpay_subscription_id,
+      'subscription.status': 'active',
+      'subscription.plan': subscription.plan_id,
+      'subscription.startedAt': admin.firestore.FieldValue.serverTimestamp(),
+      'subscription.nextBillingDate': new Date(subscription.current_end * 1000),
+      credits: admin.firestore.FieldValue.increment(getPlanCredits(subscription.plan_id))
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Subscription verified and activated' 
+    });
+  } catch (error) {
+    console.error('Error verifying subscription:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to verify subscription',
+      details: error.message 
+    });
+  }
+});
+
+// Webhook handler for subscription events
+app.post('/api/webhooks/razorpay', async (req, res) => {
+  try {
+    const webhook_secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const shasum = crypto.createHmac('sha256', webhook_secret);
+    shasum.update(JSON.stringify(req.body));
+    const digest = shasum.digest('hex');
+
+    // Verify webhook signature
+    if (digest !== req.headers['x-razorpay-signature']) {
+      return res.status(400).json({ error: 'Invalid webhook signature' });
+    }
+
+    const { event, payload } = req.body;
+
+    switch (event) {
+      case 'subscription.charged':
+        await handleSubscriptionCharged(payload);
+        break;
+      case 'subscription.cancelled':
+        await handleSubscriptionCancelled(payload);
+        break;
+      case 'subscription.paused':
+        await handleSubscriptionPaused(payload);
+        break;
+      case 'subscription.resumed':
+        await handleSubscriptionResumed(payload);
+        break;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// Helper functions
+function getPlanCredits(planId) {
+  const planCredits = {
+    'plan_Q30DrDwrdv5sUN': 10,  // Starter
+    'plan_Q30G5R2vlZl9XS': 50,  // Basic
+    'plan_Q30GQUMPYLZMYj': 150  // Pro
+  };
+  return planCredits[planId] || 0;
+}
+
+async function handleSubscriptionCharged(payload) {
+  const db = admin.firestore();
+  const userId = payload.subscription.notes.user_id;
+  const planId = payload.subscription.plan_id;
+
+  await db.collection('users').doc(userId).update({
+    'subscription.nextBillingDate': new Date(payload.subscription.current_end * 1000),
+    credits: admin.firestore.FieldValue.increment(getPlanCredits(planId))
+  });
+}
+
+async function handleSubscriptionCancelled(payload) {
+  const db = admin.firestore();
+  const userId = payload.subscription.notes.user_id;
+
+  await db.collection('users').doc(userId).update({
+    'subscription.status': 'cancelled',
+    'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+async function handleSubscriptionPaused(payload) {
+  const db = admin.firestore();
+  const userId = payload.subscription.notes.user_id;
+
+  await db.collection('users').doc(userId).update({
+    'subscription.status': 'paused',
+    'subscription.pausedAt': admin.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+async function handleSubscriptionResumed(payload) {
+  const db = admin.firestore();
+  const userId = payload.subscription.notes.user_id;
+
+  await db.collection('users').doc(userId).update({
+    'subscription.status': 'active',
+    'subscription.resumedAt': admin.firestore.FieldValue.serverTimestamp()
+  });
+}
+
 // Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
