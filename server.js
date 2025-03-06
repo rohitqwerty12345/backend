@@ -294,9 +294,15 @@ app.post('/api/verify-subscription', async (req, res) => {
   }
 });
 
-// Webhook handler for subscription events
-app.post('/api/webhooks/razorpay', async (req, res) => {
+// Update the webhook endpoint to properly parse and respond
+app.post('/api/webhooks/razorpay', express.json(), async (req, res) => {
   try {
+    // Log the incoming request for debugging
+    console.log('Webhook received:', {
+      headers: req.headers,
+      body: req.body
+    });
+
     const webhook_secret = process.env.RAZORPAY_WEBHOOK_SECRET;
     const shasum = crypto.createHmac('sha256', webhook_secret);
     shasum.update(JSON.stringify(req.body));
@@ -304,10 +310,12 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
 
     // Verify webhook signature
     if (digest !== req.headers['x-razorpay-signature']) {
+      console.log('Invalid signature');
       return res.status(400).json({ error: 'Invalid webhook signature' });
     }
 
     const { event, payload } = req.body;
+    console.log('Processing event:', event);
 
     switch (event) {
       case 'subscription.charged':
@@ -324,10 +332,17 @@ app.post('/api/webhooks/razorpay', async (req, res) => {
         break;
     }
 
-    res.json({ success: true });
+    // Send a proper JSON response
+    res.status(200).json({ 
+      status: 'success',
+      message: 'Webhook processed successfully'
+    });
   } catch (error) {
     console.error('Webhook error:', error);
-    res.status(500).json({ error: 'Webhook processing failed' });
+    res.status(500).json({ 
+      status: 'error',
+      message: error.message 
+    });
   }
 });
 
