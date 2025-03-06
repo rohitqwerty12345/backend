@@ -284,7 +284,17 @@ app.post('/api/create-subscription', async (req, res) => {
       'subscription.nextBillingDate': nextBillingDate,
       'subscription.startAt': start_at,
       'subscription.currentEnd': currentEnd,
-      'subscription.type': 'monthly'
+      'subscription.type': 'monthly',
+      'subscription.isSubscription': true,
+      'plan.purchaseHistory': admin.firestore.FieldValue.arrayUnion({
+        date: new Date().toISOString(),
+        plan: getPlanName(plan_id),
+        isSubscription: true,
+        subscriptionId: subscription.id,
+        amount: getPlanAmount(plan_id),
+        credits: getPlanCredits(plan_id),
+        type: 'subscription'
+      })
     });
 
     // Return subscription data with billing dates
@@ -313,11 +323,11 @@ app.post('/api/create-subscription', async (req, res) => {
 app.post('/api/verify-subscription', async (req, res) => {
   try {
     const { 
-      razorpay_payment_id,
+      razorpay_payment_id, 
       razorpay_subscription_id,
       razorpay_signature 
     } = req.body;
-
+    
     if (!razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature) {
       return res.status(400).json({
         success: false,
@@ -338,34 +348,31 @@ app.post('/api/verify-subscription', async (req, res) => {
       });
     }
 
-    // Get subscription details from Razorpay
+    // Get the subscription from Razorpay
     const subscription = await razorpay.subscriptions.fetch(razorpay_subscription_id);
     
     // Calculate next billing date from current_end
     const nextBillingDate = new Date(subscription.current_end * 1000);
     
-    // Update user in Firebase
-    const userId = subscription.notes.user_id;
-    const db = admin.firestore();
-    
-    await db.collection('users').doc(userId).update({
-      'subscription.id': razorpay_subscription_id,
-      'subscription.status': 'active',
-      'subscription.plan': subscription.plan_id,
-      'subscription.startedAt': admin.firestore.FieldValue.serverTimestamp(),
-      'subscription.nextBillingDate': nextBillingDate,
-      'subscription.currentEnd': subscription.current_end,
-      'subscription.type': 'monthly',
-      'subscription.paymentId': razorpay_payment_id,
-      credits: admin.firestore.FieldValue.increment(getPlanCredits(subscription.plan_id))
-    });
-
+    // Return the subscription data, but don't update Firebase
     res.json({ 
       success: true, 
-      message: 'Subscription verified and activated',
-      nextBillingDate: nextBillingDate,
-      currentEnd: subscription.current_end,
-      formattedNextBilling: nextBillingDate.toISOString()
+      message: 'Subscription verified successfully',
+      subscription: {
+        id: razorpay_subscription_id,
+        paymentId: razorpay_payment_id,
+        status: 'active',
+        plan: getPlanName(subscription.plan_id),
+        nextBillingDate: nextBillingDate.toISOString(),
+        currentEnd: subscription.current_end,
+        planId: subscription.plan_id
+      },
+      plan: {
+        name: getPlanName(subscription.plan_id),
+        type: 'subscription'
+      },
+      credits: getPlanCredits(subscription.plan_id),
+      amount: getPlanAmount(subscription.plan_id)
     });
   } catch (error) {
     console.error('Error verifying subscription:', error);
@@ -436,9 +443,10 @@ app.post('/api/webhooks/razorpay', express.json(), async (req, res) => {
   }
 });
 
-// Update the cancel subscription endpoint to handle legacy subscriptions
+// Update the cancel subscription endpoint to handle errors better
 app.post('/api/cancel-subscription', async (req, res) => {
   try {
+    console.log('Cancel subscription request:', req.body);
     const { subscription_id, user_id } = req.body;
 
     if (!subscription_id || !user_id) {
@@ -447,83 +455,44 @@ app.post('/api/cancel-subscription', async (req, res) => {
         error: 'Missing subscription_id or user_id' 
       });
     }
-
-    // Check if this is a test or legacy subscription
-    if (subscription_id === 'test-subscription-id' || subscription_id === 'legacy-subscription') {
-      // For test/legacy subscription, just update Firebase without contacting Razorpay
-      const db = admin.firestore();
-      
-      // Check if user exists first
-      const userDoc = await db.collection('users').doc(user_id).get();
-      if (!userDoc.exists) {
-        return res.status(404).json({
-          success: false,
-          error: 'User not found'
-        });
-      }
-      
-      // Update both new and legacy subscription data structures
-      const userData = userDoc.data();
-      const updateData = {
-        'subscription.status': 'cancelled',
-        'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp()
-      };
-      
-      // For legacy users, also update the plan field
-      if (userData.plan && !userData.subscription) {
-        updateData['plan.status'] = 'cancelled';
-        updateData['plan.cancelledAt'] = admin.firestore.FieldValue.serverTimestamp();
-      }
-      
-      await db.collection('users').doc(user_id).update(updateData);
-
+    
+    // Check if this is a test or mock subscription
+    const isMockSubscription = ['test-subscription-id', 'legacy-subscription', 'manual-subscription-12345'].includes(subscription_id);
+    
+    if (isMockSubscription) {
+      // For test subscriptions, just return success without Razorpay or Firebase interaction
       return res.json({ 
         success: true, 
-        message: 'Subscription cancelled successfully',
+        message: 'Test subscription cancellation acknowledged',
         data: { id: subscription_id, status: 'cancelled' }
       });
     }
-
-    // Regular Razorpay subscription handling
+    
+    // For real Razorpay subscriptions
     try {
-      // Try to cancel in Razorpay
+      // Only make Razorpay call, don't update Firebase
+      console.log('Attempting to cancel Razorpay subscription:', subscription_id);
       const subscription = await razorpay.subscriptions.cancel(subscription_id);
-      
-      // Update Firebase
-      const db = admin.firestore();
-      await db.collection('users').doc(user_id).update({
-        'subscription.status': 'cancelled',
-        'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp()
-      });
       
       return res.json({ 
         success: true, 
-        message: 'Subscription cancelled successfully',
+        message: 'Razorpay subscription cancelled successfully',
         data: subscription
       });
     } catch (razorpayError) {
-      console.error('Razorpay error:', razorpayError);
-      
-      // Even if Razorpay fails (e.g., subscription already cancelled),
-      // still update Firebase to ensure UI reflects cancelled status
-      const db = admin.firestore();
-      await db.collection('users').doc(user_id).update({
-        'subscription.status': 'cancelled',
-        'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp()
-      });
-      
-      return res.json({ 
-        success: true, 
-        message: 'Subscription marked as cancelled in our system',
-        warning: 'Razorpay returned an error, but we\'ve updated our records'
+      console.error('Razorpay cancellation error:', razorpayError);
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to cancel subscription with Razorpay',
+        details: razorpayError.message
       });
     }
   } catch (error) {
-    console.error('Error cancelling subscription:', error);
+    console.error('Error in cancel subscription endpoint:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to cancel subscription',
-      details: error.message 
+      error: 'Server error when processing subscription cancellation',
+      details: error.message || 'Unknown server error'
     });
   }
 });
@@ -580,6 +549,26 @@ async function handleSubscriptionResumed(payload) {
     'subscription.status': 'active',
     'subscription.resumedAt': admin.firestore.FieldValue.serverTimestamp()
   });
+}
+
+// Helper function to get plan name from ID
+function getPlanName(planId) {
+  const planNames = {
+    'plan_Q30DrDwrdv5sUN': 'starter',
+    'plan_Q30G5R2vlZl9XS': 'basic',
+    'plan_Q30GQUMPYLZMYj': 'pro'
+  };
+  return planNames[planId] || 'unknown';
+}
+
+// Helper function to get plan amount
+function getPlanAmount(planId) {
+  const planAmounts = {
+    'plan_Q30DrDwrdv5sUN': 99,    // Starter
+    'plan_Q30G5R2vlZl9XS': 449,   // Basic
+    'plan_Q30GQUMPYLZMYj': 1249   // Pro
+  };
+  return planAmounts[planId] || 0;
 }
 
 // Start the server
