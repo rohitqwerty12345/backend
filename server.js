@@ -239,7 +239,7 @@ app.get('/cors-test', (req, res) => {
 
 // Add these new endpoints for subscription handling
 
-// Create a subscription
+// Create subscription endpoint
 app.post('/api/create-subscription', async (req, res) => {
   try {
     const { plan_id, user_id, total_count = 12 } = req.body;
@@ -251,70 +251,31 @@ app.post('/api/create-subscription', async (req, res) => {
       });
     }
 
-    // Get current date
+    // Get current date for subscription start
     const start_at = Math.floor(Date.now() / 1000);
     
     // Create subscription with billing cycle details
     const subscription = await razorpay.subscriptions.create({
       plan_id: plan_id,
-      total_count: total_count,
+      total_count: total_count, // Number of billing cycles
       quantity: 1,
       customer_notify: 1,
       start_at: start_at,
       notes: {
         user_id: user_id
-      },
-      notify_info: {
-        notify_phone: "",
-        notify_email: ""
       }
     });
 
-    // Calculate next billing date (30 days from start)
-    const nextBillingDate = new Date((start_at + (30 * 24 * 60 * 60)) * 1000);
-    const currentEnd = start_at + (30 * 24 * 60 * 60);
-
-    // Update user in Firebase
-    const db = admin.firestore();
-    await db.collection('users').doc(user_id).update({
-      'subscription.id': subscription.id,
-      'subscription.status': 'created',
-      'subscription.plan': plan_id,
-      'subscription.startedAt': admin.firestore.FieldValue.serverTimestamp(),
-      'subscription.nextBillingDate': nextBillingDate,
-      'subscription.startAt': start_at,
-      'subscription.currentEnd': currentEnd,
-      'subscription.type': 'monthly',
-      'subscription.isSubscription': true,
-      'plan.purchaseHistory': admin.firestore.FieldValue.arrayUnion({
-        date: new Date().toISOString(),
-        plan: getPlanName(plan_id),
-        isSubscription: true,
-        subscriptionId: subscription.id,
-        amount: getPlanAmount(plan_id),
-        credits: getPlanCredits(plan_id),
-        type: 'subscription'
-      })
+    res.json({
+      success: true,
+      data: subscription
     });
-
-    // Return subscription data with billing dates
-    res.json({ 
-      success: true, 
-      data: {
-        ...subscription,
-        nextBillingDate,
-        currentEnd,
-        formattedNextBilling: nextBillingDate.toISOString(),
-        formattedCurrentEnd: new Date(currentEnd * 1000).toISOString()
-      }
-    });
-
   } catch (error) {
     console.error('Error creating subscription:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: 'Failed to create subscription',
-      details: error.message 
+      details: error.message
     });
   }
 });
@@ -561,10 +522,10 @@ function getPlanName(planId) {
   return planNames[planId] || 'unknown';
 }
 
-// Helper function to get plan amount
+// Update the helper function for plan amounts and IDs
 function getPlanAmount(planId) {
   const planAmounts = {
-    'plan_Q30DrDwrdv5sUN': 99,    // Starter
+    'plan_Q3S1gpXkLmaXgD': 1,     // New ₹1 Starter plan
     'plan_Q30G5R2vlZl9XS': 449,   // Basic
     'plan_Q30GQUMPYLZMYj': 1249   // Pro
   };
