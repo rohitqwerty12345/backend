@@ -461,7 +461,7 @@ app.post('/api/cancel-subscription', async (req, res) => {
 // Helper functions
 function getPlanCredits(planId) {
   const planCredits = {
-    'plan_Q30DrDwrdv5sUN': 10,  // Starter
+    'plan_Q3S1gpXkLmaXgD': 10,  // Starter (₹1 test plan)
     'plan_Q30G5R2vlZl9XS': 50,  // Basic
     'plan_Q30GQUMPYLZMYj': 150  // Pro
   };
@@ -515,7 +515,7 @@ async function handleSubscriptionResumed(payload) {
 // Helper function to get plan name from ID
 function getPlanName(planId) {
   const planNames = {
-    'plan_Q30DrDwrdv5sUN': 'starter',
+    'plan_Q3S1gpXkLmaXgD': 'starter', // Starter (₹1 test plan)
     'plan_Q30G5R2vlZl9XS': 'basic',
     'plan_Q30GQUMPYLZMYj': 'pro'
   };
