@@ -76,25 +76,41 @@ app.post('/api/razorpay-order', async (req, res) => {
     if (!amount) {
       return res.status(400).json({ success: false, error: 'Amount is required' });
     }
+
+    // Log the request for debugging
+    console.log('Creating order with:', {
+      amount,
+      orderId,
+      currency,
+      notes
+    });
     
     const options = {
-      amount: amount * 100, // Razorpay expects amount in paisa
+      amount: Math.round(amount * 100), // Convert to paise and ensure it's an integer
       currency,
       receipt: orderId,
-      notes
+      notes,
+      payment_capture: 1 // Auto capture payment
     };
     
-    console.log('Creating Razorpay order with options:', JSON.stringify(options));
     const order = await razorpay.orders.create(options);
-    console.log('Razorpay order created:', JSON.stringify(order));
+    console.log('Order created:', order);
     
-    res.json({ success: true, data: order });
+    res.json({
+      success: true,
+      data: {
+        order_id: order.id,
+        currency: order.currency,
+        amount: order.amount,
+        notes: order.notes
+      }
+    });
   } catch (error) {
     console.error('Error creating order:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to create order',
-      details: error.message || 'Unknown error'
+      details: error.message
     });
   }
 });
@@ -304,6 +320,8 @@ app.post('/api/webhooks/razorpay', express.json(), async (req, res) => {
     });
 
     const webhook_secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    console.log('Using webhook secret:', webhook_secret.substring(0, 10) + '...');  // Log first 10 chars for verification
+
     const shasum = crypto.createHmac('sha256', webhook_secret);
     shasum.update(JSON.stringify(req.body));
     const digest = shasum.digest('hex');
@@ -396,6 +414,42 @@ async function handleSubscriptionResumed(payload) {
     'subscription.resumedAt': admin.firestore.FieldValue.serverTimestamp()
   });
 }
+
+// Add this new endpoint
+app.post('/api/cancel-subscription', async (req, res) => {
+  try {
+    const { subscription_id, user_id } = req.body;
+
+    if (!subscription_id || !user_id) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing subscription_id or user_id' 
+      });
+    }
+
+    // Cancel subscription in Razorpay
+    await razorpay.subscriptions.cancel(subscription_id);
+
+    // Update user's subscription status in Firebase
+    const db = admin.firestore();
+    await db.collection('users').doc(user_id).update({
+      'subscription.status': 'cancelled',
+      'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Subscription cancelled successfully' 
+    });
+  } catch (error) {
+    console.error('Error cancelling subscription:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to cancel subscription',
+      details: error.message 
+    });
+  }
+});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
